@@ -39,11 +39,13 @@ module Rack
     end
 
     # @option opts [String, URI::HTTP] :backend Backend host to proxy requests to
+    # @option opts [String, URI::HTTP] :proxy Another proxy server to request to backend
     def initialize(opts = {})
       @streaming = opts.fetch(:streaming, true)
       @ssl_verify_none = opts.fetch(:ssl_verify_none, false)
       @backend = URI(opts[:backend]) if opts[:backend]
       @read_timeout = opts.fetch(:read_timeout, 60)
+      @proxy = URI(opts[:proxy]) if opts[:proxy]
     end
 
     def call(env)
@@ -93,7 +95,7 @@ module Rack
       # Create the response
       if @streaming
         # streaming response (the actual network communication is deferred, a.k.a. streamed)
-        target_response = HttpStreamingResponse.new(target_request, backend.host, backend.port)
+        target_response = HttpStreamingResponse.new(target_request, backend.host, backend.port, *proxy_args)
         target_response.use_ssl = use_ssl
         target_response.read_timeout = read_timeout
         target_response.verify_mode = OpenSSL::SSL::VERIFY_NONE if use_ssl && ssl_verify_none
@@ -101,7 +103,7 @@ module Rack
         start_opts = use_ssl ? {:use_ssl => use_ssl} : {}
         start_opts[:verify_mode] = OpenSSL::SSL::VERIFY_NONE if use_ssl && ssl_verify_none
         start_opts[:read_timeout] = read_timeout
-        target_response = Net::HTTP.start(backend.host, backend.port, start_opts) do |http|
+        target_response = Net::HTTP.start(backend.host, backend.port, *proxy_args, start_opts) do |http|
           http.request(target_request)
         end
       end
@@ -113,6 +115,10 @@ module Rack
       [target_response.code, headers, body]
     end
 
+    private
+    def proxy_args
+      return [] unless @proxy
+      [@proxy.hostname, @proxy.port, @proxy.user, @proxy.password]
+    end
   end
-
 end

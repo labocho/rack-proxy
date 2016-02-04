@@ -8,8 +8,9 @@ module Rack
     attr_accessor :verify_mode
     attr_accessor :read_timeout
 
-    def initialize(request, host, port = nil)
+    def initialize(request, host, port = nil, *proxy_args)
       @request, @host, @port = request, host, port
+      @proxy_args = proxy_args
     end
 
     def body
@@ -61,7 +62,7 @@ module Rack
     # Net::HTTP
     def session
       @session ||= begin
-        http = Net::HTTP.new @host, @port
+        http = Net::HTTP.new @host, @port, *@proxy_args
         http.use_ssl = self.use_ssl
         http.verify_mode = self.verify_mode
         http.read_timeout = self.read_timeout
