@@ -47,6 +47,12 @@ class Net::HTTP
   # end
   
   def begin_request_hacked(req)
+    if proxy_user()
+      unless use_ssl?
+        req.proxy_basic_auth proxy_user(), proxy_pass()
+      end
+    end
+
     begin_transport req
     req.exec @socket, @curr_http_version, edit_path(req.path)
     begin
