@@ -118,7 +118,11 @@ module Rack
     private
     def proxy_args
       return [] unless @proxy
-      [@proxy.hostname, @proxy.port, @proxy.user, @proxy.password]
+      [ @proxy.hostname && URI.decode_www_form_component(@proxy.hostname),
+        @proxy.port,
+        @proxy.user     && URI.decode_www_form_component(@proxy.user),
+        @proxy.password && URI.decode_www_form_component(@proxy.password),
+      ]
     end
   end
 end
