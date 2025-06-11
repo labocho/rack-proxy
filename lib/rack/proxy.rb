@@ -5,47 +5,83 @@ module Rack
 
   # Subclass and bring your own #rewrite_request and #rewrite_response
   class Proxy
-    VERSION = "0.5.17"
+    VERSION = "0.7.7".freeze
+
+    HOP_BY_HOP_HEADERS = {
+      'connection' => true,
+      'keep-alive' => true,
+      'proxy-authenticate' => true,
+      'proxy-authorization' => true,
+      'te' => true,
+      'trailer' => true,
+      'transfer-encoding' => true,
+      'upgrade' => true
+    }.freeze
 
     class << self
       def extract_http_request_headers(env)
         headers = env.reject do |k, v|
-          !(/^HTTP_[A-Z_]+$/ === k) || v.nil?
+          !(/^HTTP_[A-Z0-9_\.]+$/ === k) || v.nil?
         end.map do |k, v|
           [reconstruct_header_name(k), v]
-        end.inject(Utils::HeaderHash.new) do |hash, k_v|
-          k, v = k_v
-          hash[k] = v
-          hash
-        end
+        end.then { |pairs| build_header_hash(pairs) }
 
-        x_forwarded_for = (headers["X-Forwarded-For"].to_s.split(/, +/) << env["REMOTE_ADDR"]).join(", ")
+        x_forwarded_for = (headers['X-Forwarded-For'].to_s.split(/, +/) << env['REMOTE_ADDR']).join(', ')
 
-        headers.merge!("X-Forwarded-For" =>  x_forwarded_for)
+        headers.merge!('X-Forwarded-For' => x_forwarded_for)
       end
 
       def normalize_headers(headers)
         mapped = headers.map do |k, v|
-          [k, if v.is_a? Array then v.join("\n") else v end]
+          [titleize(k), if v.is_a? Array then v.join("\n") else v end]
         end
-        Utils::HeaderHash.new Hash[mapped]
+        build_header_hash Hash[mapped]
+      end
+
+      def build_header_hash(pairs)
+        if Rack.const_defined?(:Headers)
+          # Rack::Headers is only available from Rack 3 onward
+          Headers.new.tap { |headers| pairs.each { |k, v| headers[k] = v } }
+        else
+          # Rack::Utils::HeaderHash is deprecated from Rack 3 onward and is to be removed in 3.1
+          Utils::HeaderHash.new(pairs)
+        end
       end
 
       protected
 
       def reconstruct_header_name(name)
-        name.sub(/^HTTP_/, "").gsub("_", "-")
+        titleize(name.sub(/^HTTP_/, "").gsub("_", "-"))
+      end
+
+      def titleize(str)
+        str.split("-").map(&:capitalize).join("-")
       end
     end
 
     # @option opts [String, URI::HTTP] :backend Backend host to proxy requests to
-    # @option opts [String, URI::HTTP] :proxy Another proxy server to request to backend
-    def initialize(opts = {})
+    def initialize(app = nil, opts= {})
+      if app.is_a?(Hash)
+        opts = app
+        @app = nil
+      else
+        @app = app
+      end
+
       @streaming = opts.fetch(:streaming, true)
       @ssl_verify_none = opts.fetch(:ssl_verify_none, false)
-      @backend = URI(opts[:backend]) if opts[:backend]
+      @backend = opts[:backend] ? URI(opts[:backend]) : nil
       @read_timeout = opts.fetch(:read_timeout, 60)
       @proxy = URI(opts[:proxy]) if opts[:proxy]
+      @ssl_version = opts[:ssl_version]
+      @cert = opts[:cert]
+      @key = opts[:key]
+      @verify_mode = opts[:verify_mode]
+
+      @username = opts[:username]
+      @password = opts[:password]
+
+      @opts = opts
     end
 
     def call(env)
@@ -74,7 +110,7 @@ module Rack
         full_path = source_request.fullpath
       end
 
-      target_request = Net::HTTP.const_get(source_request.request_method.capitalize).new(full_path)
+      target_request = Net::HTTP.const_get(source_request.request_method.capitalize, false).new(full_path)
 
       # Setup headers
       target_request.initialize_http_header(self.class.extract_http_request_headers(source_request.env))
@@ -87,9 +123,11 @@ module Rack
         target_request.body_stream.rewind
       end
 
+      # Use basic auth if we have to
+      target_request.basic_auth(@username, @password) if @username && @password
+
       backend = env.delete('rack.backend') || @backend || source_request
-      use_ssl = backend.scheme == "https"
-      ssl_verify_none = (env.delete('rack.ssl_verify_none') || @ssl_verify_none) == true
+      use_ssl = backend.scheme == "https" || @cert
       read_timeout = env.delete('http.read_timeout') || @read_timeout
 
       # Create the response
@@ -98,24 +136,36 @@ module Rack
         target_response = HttpStreamingResponse.new(target_request, backend.host, backend.port, *proxy_args)
         target_response.use_ssl = use_ssl
         target_response.read_timeout = read_timeout
-        target_response.verify_mode = OpenSSL::SSL::VERIFY_NONE if use_ssl && ssl_verify_none
+        target_response.ssl_version = @ssl_version if @ssl_version
+        target_response.verify_mode = (@verify_mode || OpenSSL::SSL::VERIFY_NONE) if use_ssl
+        target_response.cert = @cert if @cert
+        target_response.key = @key if @key
       else
-        start_opts = use_ssl ? {:use_ssl => use_ssl} : {}
-        start_opts[:verify_mode] = OpenSSL::SSL::VERIFY_NONE if use_ssl && ssl_verify_none
-        start_opts[:read_timeout] = read_timeout
-        target_response = Net::HTTP.start(backend.host, backend.port, *proxy_args, start_opts) do |http|
+        http = Net::HTTP.new(backend.host, backend.port, *proxy_args)
+        http.use_ssl = use_ssl if use_ssl
+        http.read_timeout = read_timeout
+        http.ssl_version = @ssl_version if @ssl_version
+        http.verify_mode = (@verify_mode || OpenSSL::SSL::VERIFY_NONE if use_ssl) if use_ssl
+        http.cert = @cert if @cert
+        http.key = @key if @key
+
+        target_response = http.start do
           http.request(target_request)
         end
       end
 
-      headers = (target_response.respond_to?(:headers) && target_response.headers) || self.class.normalize_headers(target_response.to_hash)
+      code    = target_response.code
+      headers = self.class.normalize_headers(target_response.respond_to?(:headers) ? target_response.headers : target_response.to_hash)
       body    = target_response.body || [""]
       body    = [body] unless body.respond_to?(:each)
 
-      [target_response.code, headers, body]
+      # According to https://tools.ietf.org/html/draft-ietf-httpbis-p1-messaging-14#section-7.1.3.1Acc
+      # should remove hop-by-hop header fields
+      headers.reject! { |k| HOP_BY_HOP_HEADERS[k.downcase] }
+
+      [code, headers, body]
     end
 
-    private
     def proxy_args
       return [] unless @proxy
       [ @proxy.hostname && URI.decode_www_form_component(@proxy.hostname),

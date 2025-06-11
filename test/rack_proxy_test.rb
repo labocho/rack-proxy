@@ -6,7 +6,7 @@ class RackProxyTest < Test::Unit::TestCase
     attr_accessor :host
 
     def rewrite_env(env)
-      env["HTTP_HOST"] = self.host || 'www.trix.pl'
+      env["HTTP_HOST"] = self.host || 'example.com'
       env
     end
   end
@@ -18,14 +18,15 @@ class RackProxyTest < Test::Unit::TestCase
   def test_http_streaming
     get "/"
     assert last_response.ok?
-    assert_match(/Jacek Becela/, last_response.body)
+
+    assert_match(/Example Domain/, last_response.body)
   end
 
   def test_http_full_request
     app(:streaming => false)
     get "/"
     assert last_response.ok?
-    assert_match(/Jacek Becela/, last_response.body)
+    assert_match(/Example Domain/, last_response.body)
   end
 
   def test_http_full_request_headers
@@ -42,8 +43,22 @@ class RackProxyTest < Test::Unit::TestCase
     assert_match(/(itunes|iphone|ipod|mac|ipad)/, last_response.body)
   end
 
+  def test_https_streaming_tls
+    app(:ssl_version => :TLSv1).host = 'www.apple.com'
+    get 'https://example.com'
+    assert last_response.ok?
+    assert_match(/(itunes|iphone|ipod|mac|ipad)/, last_response.body)
+  end
+
   def test_https_full_request
     app(:streaming => false).host = 'www.apple.com'
+    get 'https://example.com'
+    assert last_response.ok?
+    assert_match(/(itunes|iphone|ipod|mac|ipad)/, last_response.body)
+  end
+
+  def test_https_full_request_tls
+    app({:streaming => false, :ssl_version => :TLSv1}).host = 'www.apple.com'
     get 'https://example.com'
     assert last_response.ok?
     assert_match(/(itunes|iphone|ipod|mac|ipad)/, last_response.body)
@@ -63,10 +78,10 @@ class RackProxyTest < Test::Unit::TestCase
     proxy_class = Rack::Proxy
 
     header = proxy_class.send(:reconstruct_header_name, "HTTP_ABC")
-    assert header == "ABC"
+    assert header == "Abc"
 
     header = proxy_class.send(:reconstruct_header_name, "HTTP_ABC_D")
-    assert header == "ABC-D"
+    assert header == "Abc-D"
   end
 
   def test_extract_http_request_headers
@@ -74,11 +89,15 @@ class RackProxyTest < Test::Unit::TestCase
     env = {
       'NOT-HTTP-HEADER' => 'test-value',
       'HTTP_ACCEPT' => 'text/html',
-      'HTTP_CONNECTION' => nil
+      'HTTP_CONNECTION' => nil,
+      'HTTP_CONTENT_MD5' => 'deadbeef',
+      'HTTP_HEADER.WITH.PERIODS' => 'stillmooing'
     }
 
     headers = proxy_class.extract_http_request_headers(env)
     assert headers.key?('ACCEPT')
+    assert headers.key?('CONTENT-MD5')
+    assert headers.key?('HEADER.WITH.PERIODS')
     assert !headers.key?('CONNECTION')
     assert !headers.key?('NOT-HTTP-HEADER')
   end
@@ -98,5 +117,11 @@ class RackProxyTest < Test::Unit::TestCase
     assert_nothing_thrown do
       post "/", nil, "CONTENT_LENGTH" => nil
     end
+  end
+
+  def test_response_header_included_Hop_by_hop
+    app({:streaming => true}).host = 'mockapi.io'
+    get 'https://example.com/oauth2/token/info?access_token=123'
+    assert !last_response.headers.key?('transfer-encoding')
   end
 end

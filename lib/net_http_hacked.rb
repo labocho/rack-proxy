@@ -1,14 +1,14 @@
 # We are hacking net/http to change semantics of streaming handling
-# from "block" semantics to regular "return" semnatics.
+# from "block" semantics to regular "return" semantics.
 # We need it to construct a streamable rack triplet:
 #
 # [status, headers, streamable_body]
 #
-# See http://github.com/aniero/rack-streaming-proxy 
+# See http://github.com/zerowidth/rack-streaming-proxy
 # for alternative that uses additional process.
 #
 # BTW I don't like monkey patching either
-# but this is not real monkey patching. 
+# but this is not real monkey patching.
 # I just added some methods and named them very uniquely
 # to avoid eventual conflicts. You're safe. Trust me.
 #
@@ -45,7 +45,7 @@ class Net::HTTP
   #
   #   res
   # end
-  
+
   def begin_request_hacked(req)
     if proxy_user()
       unless use_ssl?
@@ -62,7 +62,7 @@ class Net::HTTP
     @req_hacked, @res_hacked = req, res
     @res_hacked
   end
-  
+
   def end_request_hacked
     @res_hacked.end_reading_body_hacked
     end_transport @req_hacked, @res_hacked
@@ -83,12 +83,12 @@ class Net::HTTPResponse
   #     @socket = nil
   #   end
   # end
-  
+
   def begin_reading_body_hacked(sock, reqmethodallowbody)
     @socket = sock
     @body_exist = reqmethodallowbody && self.class.body_permitted?
   end
-  
+
   def end_reading_body_hacked
     self.body
     @socket = nil
